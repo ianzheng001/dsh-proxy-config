@@ -21,10 +21,10 @@
 
 ```bash
 # Web / headless profile：直接按仓库地址装（或不 clone 也行）
-dsh plugin --profile web add https://github.com/ianzheng001/dsh-proxy-config
+dsh plugin --profile web add git+https://github.com/ianzheng001/dsh-proxy-config.git
 
 # 开发时：clone 后按本地绝对路径装，改代码只需重启
-git clone https://github.com/ianzheng001/dsh-proxy-config ~/git/dsh-proxy-config
+git clone https://github.com/ianzheng001/dsh-proxy-config.git ~/git/dsh-proxy-config
 dsh plugin --profile web add ~/git/dsh-proxy-config
 ```
 
@@ -44,7 +44,7 @@ Desktop 走独立的 `desktop` profile，和 CLI 的 `web` profile 互不影响�
 #    "managed exclusively by the Electron application"；Desktop 自带 CLI 带
 #    manageDesktopProfile 权限，只有它放行 plugin 子命令。
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add https://github.com/ianzheng001/dsh-proxy-config
+  plugin --profile desktop add git+https://github.com/ianzheng001/dsh-proxy-config.git
 
 # 3. 在 ~/.dsh/profiles/desktop/cordis.patch.yml 里加同样的 - id: proxy-config 配置
 # 4. 重新打开 Desktop
