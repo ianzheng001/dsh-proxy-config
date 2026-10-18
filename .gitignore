@@ -1,0 +1,9 @@
+node_modules/
+*.log
+.DS_Store
+test/harness/bundle.js
+
+# local development notes — not part of the shared plugin repository
+HANDOVER.md
+CLAUDE.md
+AGENTS.md

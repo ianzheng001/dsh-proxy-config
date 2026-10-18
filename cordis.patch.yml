@@ -1,0 +1,15 @@
+# dsh-proxy-config bundle patch: ADDITIVE.
+#
+# Inserts exactly one plugin-owned row and touches nothing else, so installing
+# or removing this package never disturbs an official entry.
+#
+# The row is addressed as `proxy-config` in the profile's cordis.patch.yml, so a
+# profile can override its config without re-declaring the insert:
+#
+#   - id: proxy-config
+#     config:
+#       proxy: http://127.0.0.1:7890
+#       bypass: [.example.com, .local]
+- insert:
+    - id: proxy-config
+      name: 'dsh-proxy-config'
