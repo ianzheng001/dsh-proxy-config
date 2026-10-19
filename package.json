@@ -1,7 +1,7 @@
 {
   "name": "dsh-proxy-config",
   "version": "0.4.1",
-  "description": "Configure multiple named outbound HTTP proxies (and bypass lists) for DeepSeek Harness from Settings — exactly one active at a time — instead of the launch environment",
+  "description": "Configure multiple named outbound HTTP proxies (each with its own bypass list) for DeepSeek Harness (dsh) from Settings — exactly one active at a time",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -42,5 +42,13 @@
         "@deepseek-ai/dsh-client-ui-settings"
       ]
     }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ianzheng001/dsh-proxy-config.git"
+  },
+  "homepage": "https://github.com/ianzheng001/dsh-proxy-config#readme",
+  "bugs": {
+    "url": "https://github.com/ianzheng001/dsh-proxy-config/issues"
   }
 }
