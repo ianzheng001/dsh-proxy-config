@@ -16,7 +16,19 @@ import { ensureDeps } from './link-deps.mjs'
 
 ensureDeps()
 
-const { buildProxyEnv, describePolicy, directEnv, effectiveMode, loadProxyLibrary, normalizeProxyUrl, redactProxy } = await import('../lib/index.js')
+const {
+  apply,
+  buildProxyEnv,
+  describePolicy,
+  directEnv,
+  effectiveMode,
+  loadProxyLibrary,
+  normalizeProxyUrl,
+  profileList,
+  redactProxy,
+  routingFields,
+  selectRouting,
+} = await import('../lib/index.js')
 const { installProxyFromEnvironment } = await import('@deepseek-ai/dsh-http-proxy')
 
 /** Every request the fake proxy observed, in arrival order. */
@@ -39,6 +51,24 @@ proxy.on('connect', (request, socket) => {
 await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve))
 const proxyPort = proxy.address().port
 const proxyUrl = `http://127.0.0.1:${proxyPort}`
+
+/** Requests seen by the second upstream proxy, used to prove preset switching. */
+const altObserved = []
+
+const altProxy = http.createServer((request, response) => {
+  altObserved.push(`${request.method ?? 'GET'} ${request.url ?? ''}`)
+  response.writeHead(200, { 'content-type': 'text/plain' })
+  response.end('proxied-ok-alt')
+})
+
+altProxy.on('connect', (request, socket) => {
+  altObserved.push(`CONNECT ${request.url ?? ''}`)
+  socket.write('HTTP/1.1 200 Connection Established\r\n\r\n')
+  socket.destroy()
+})
+
+await new Promise((resolve) => altProxy.listen(0, '127.0.0.1', resolve))
+const altProxyUrl = `http://127.0.0.1:${altProxy.address().port}`
 
 /**
  * Install a policy from the plugin's own env builder.
@@ -131,7 +161,7 @@ assert.ok(!describePolicy({ proxy: 'http://user:secret@127.0.0.1:7890', httpProx
 // 8. The described policy mirrors the library: https falls back to the HTTP proxy.
 assert.equal(
   describePolicy({ proxy: '', httpProxy: 'http://p:1', httpsProxy: '', allProxy: '', bypass: '' }),
-  'http=http://p:1/ https=http://p:1/ bypass=(loopback only)',
+  'profile=(legacy) http=http://p:1/ https=http://p:1/ bypass=(loopback only)',
 )
 
 // 9. Loading through the host's install anchor returns the launcher's own module
@@ -177,6 +207,131 @@ assert.equal(effectiveMode({ enabled: true }), 'proxy')
 assert.equal(directEnv().hasProxy, false)
 assert.equal(directEnv().get('https_proxy'), undefined)
 
+// 13. Presets: `profiles` + `active` decide the route. Switching the active
+//     name is what makes another upstream proxy receive traffic, and the
+//     previously active preset stops receiving anything without being touched.
+const presetConfig = (name) => ({
+  enabled: true,
+  mode: 'proxy',
+  active: name,
+  profiles: [
+    { name: 'first', proxy: proxyUrl, httpProxy: '', httpsProxy: '', allProxy: '', bypass: [] },
+    { name: 'second', proxy: altProxyUrl, httpProxy: '', httpsProxy: '', allProxy: '', bypass: [] },
+  ],
+  proxy: '',
+  httpProxy: '',
+  httpsProxy: '',
+  allProxy: '',
+  bypass: '',
+  log: true,
+})
+
+observed.length = 0
+altObserved.length = 0
+let presetDispose = await install(presetConfig('first'))
+await attempt('https://example.invalid/active-first')
+assert.ok(observed.includes('CONNECT example.invalid:443'), 'the active preset must route traffic')
+assert.deepEqual(altObserved, [], 'inactive presets must stay inert')
+await presetDispose()
+
+observed.length = 0
+altObserved.length = 0
+presetDispose = await install(presetConfig('second'))
+await attempt('https://example.invalid/active-second')
+assert.ok(altObserved.includes('CONNECT example.invalid:443'), 'switching active must move traffic to the other upstream')
+assert.deepEqual(observed, [], 'the previous preset must receive nothing after the switch')
+await presetDispose()
+
+// 14. Preset selection rules: the list wins over the legacy fields once it has
+//     entries; an empty or dangling `active` installs nothing instead of
+//     silently falling back to stale top-level fields.
+assert.equal(selectRouting(presetConfig('second')).source, 'profile')
+assert.equal(selectRouting(presetConfig('second')).name, 'second')
+assert.equal(routingFields(presetConfig('second')).proxy, altProxyUrl)
+assert.equal(selectRouting({ profiles: [], active: 'x', proxy: proxyUrl }).source, 'legacy')
+assert.equal(routingFields({ profiles: [], active: 'x', proxy: proxyUrl }).proxy, proxyUrl)
+assert.equal(selectRouting({ profiles: [{ name: 'a' }], active: '' }).source, 'none')
+assert.equal(selectRouting({ profiles: [{ name: 'a' }], active: 'b' }).source, 'missing')
+assert.equal(selectRouting({ profiles: [{ name: 'a' }], active: ' b ' }).source, 'missing')
+assert.equal(selectRouting({ profiles: [{ name: '  a  ' }], active: 'a' }).source, 'profile')
+assert.equal(buildProxyEnv({ profiles: [{ name: 'a', proxy: proxyUrl }], active: '' }).hasProxy, false)
+assert.equal(buildProxyEnv({ profiles: [{ name: 'a', proxy: '' }], active: 'a', proxy: proxyUrl }).hasProxy, false)
+assert.equal(profileList({ profiles: [{ name: 'a' }, null, 3] }).length, 1)
+assert.equal(
+  describePolicy(presetConfig('first')),
+  `profile=first http=${proxyUrl}/ https=${proxyUrl}/ bypass=(loopback only)`,
+)
+assert.equal(
+  describePolicy({ profiles: [{ name: 'a' }], active: 'a', bypass: '' }),
+  'profile=a http=direct https=direct bypass=(loopback only)',
+)
+
+// 15. The plugin's own apply() reinstalls the dispatcher when the loader commits
+//     a volatile update, so switching `active` moves traffic without a restart.
+//     Config fields arrive as references from the loader; a mutable stand-in
+//     with the same `get()` shape drives the same code path.
+const fakeState = {
+  mode: 'proxy',
+  enabled: true,
+  active: 'first',
+  profiles: [
+    { name: 'first', proxy: proxyUrl, httpProxy: '', httpsProxy: '', allProxy: '', bypass: [] },
+    { name: 'second', proxy: altProxyUrl, httpProxy: '', httpsProxy: '', allProxy: '', bypass: [] },
+  ],
+  proxy: '',
+  httpProxy: '',
+  httpsProxy: '',
+  allProxy: '',
+  bypass: '',
+  log: true,
+}
+const fakeConfig = new Proxy({}, {
+  get: (_target, key) =>
+    typeof key === 'string' && key in fakeState ? { get: () => fakeState[key] } : undefined,
+})
+const warnings = []
+const listeners = new Map()
+let disposePlugin = () => {}
+const fakeCtx = {
+  get: (key) => (key === 'profileContext' ? { installAnchor } : undefined),
+  logger: { info: () => {}, debug: () => {}, warn: (message) => warnings.push(String(message)) },
+  effect: (fn) => {
+    disposePlugin = fn() ?? (() => {})
+  },
+  on: (event, handler) => listeners.set(event, handler),
+}
+await apply(fakeCtx, fakeConfig)
+
+observed.length = 0
+altObserved.length = 0
+await attempt('https://example.invalid/apply-active-first')
+assert.ok(observed.includes('CONNECT example.invalid:443'), `apply() did not install the active preset: ${JSON.stringify(observed)}`)
+assert.deepEqual(altObserved, [])
+
+fakeState.active = 'second'
+listeners.get('loader/volatile-update')([['active']])
+let switched = false
+for (let index = 0; index < 40 && !switched; index += 1) {
+  await attempt('https://example.invalid/apply-active-second')
+  switched = altObserved.length > 0
+  if (!switched) await new Promise((resolve) => setTimeout(resolve, 50))
+}
+assert.ok(switched, 'a volatile active change must reinstall the policy on the new preset')
+observed.length = 0
+await attempt('https://example.invalid/apply-after-switch')
+assert.deepEqual(observed, [], 'the previously active preset must stop receiving traffic')
+
+// An `active` name with no matching preset installs nothing and explains why.
+fakeState.active = 'missing-name'
+listeners.get('loader/volatile-update')([['active']])
+await new Promise((resolve) => setTimeout(resolve, 100))
+assert.ok(
+  warnings.some((message) => message.includes('missing-name')),
+  `expected a diagnostic for a dangling active name, got ${JSON.stringify(warnings)}`,
+)
+await disposePlugin()
+
 proxy.close()
+altProxy.close()
 
 console.log('proxy-config e2e: all assertions passed')
